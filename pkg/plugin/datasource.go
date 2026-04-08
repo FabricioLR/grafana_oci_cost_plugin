@@ -124,8 +124,18 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 
 	from := firstQuery.TimeRange.From
 	to := firstQuery.TimeRange.To
-	startTime := common.SDKTime{Time: from.Truncate(24 * time.Hour)}
-	endTime := common.SDKTime{Time: to.Truncate(24 * time.Hour)}
+	//startTime := common.SDKTime{Time: from.Truncate(24 * time.Hour)}
+	//endTime := common.SDKTime{Time: to.Truncate(24 * time.Hour)}
+	startTime := common.SDKTime{
+		Time: time.Date(from.Year(), from.Month(), from.Day() + 1, 0, 0, 0, 0, time.UTC),
+	}
+	endTime := common.SDKTime{
+		Time: time.Date(to.Year(), to.Month(), to.Day() + 1, 0, 0, 0, 0, time.UTC),
+	}
+
+	//if to.After(startTime.Time) {
+	//	endTime.Time = endTime.Time.AddDate(0, 0, 2) 
+	//}
 
 	var res usageapi.RequestSummarizedUsagesResponse
 	const cacheTimeFormat = "2006-01-02T15"
