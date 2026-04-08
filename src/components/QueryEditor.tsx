@@ -15,9 +15,10 @@ export function QueryEditor({ query, onChange, onRunQuery }: Props) {
     value: `$${v.name}`,
   }));
 
-  const onTypeChange = (event: ChangeEvent<HTMLInputElement>) => {
-    onChange({ ...query, type: event.target.value });
-  };
+  const variableOptions2 = ["all", "database", "compute", "compute-all"].map((v) => ({
+    label: `${v}`,
+    value: `${v}`,
+  }));
 
   return (
     <Stack gap={0}>
@@ -30,12 +31,11 @@ export function QueryEditor({ query, onChange, onRunQuery }: Props) {
         />
       </InlineField>
       <InlineField label="Tipo">
-        <Input
-          id="query-editor-type"
-          onChange={onTypeChange}
+        <Select
+          options={variableOptions2}
           value={query.type}
-          required
-          placeholder='database | compute | compute-all'
+          defaultValue={"all"}
+          onChange={(v) => onChange({ ...query, type: String(v.value) })}
         />
       </InlineField>
     </Stack>

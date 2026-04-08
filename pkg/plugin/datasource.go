@@ -186,13 +186,13 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 		instancesFound := make(map[string]bool)
 
 		for _, item := range res.Items {
-			if item.Tags == nil || len(item.Tags) == 0 {
-				continue 
-			}
-
 			encontrouTag := false
 			valorEncontrado := "null"
 			if (model.Type == "database"){
+				if item.Tags == nil || len(item.Tags) == 0 {
+					continue 
+				}
+
 				if (item.Service != nil && *item.Service != "Database"){
 					continue
 				}
@@ -213,6 +213,10 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 					}
 				}
 			} else if (model.Type == "compute"){
+				if item.Tags == nil || len(item.Tags) == 0 {
+					continue 
+				}
+
 				if (item.Service != nil && *item.Service != "Compute"){
 					continue
 				}
@@ -235,6 +239,10 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 					}
 				}
 			} else if (model.Type == "compute-all"){
+				if item.Tags == nil || len(item.Tags) == 0 {
+					continue 
+				}
+
 				if (item.Service != nil && *item.Service != "Compute"){
 					continue
 				}
@@ -255,6 +263,13 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 							}
 						}
 					}
+				}
+			} else if (model.Type == "all"){
+				encontrouTag = true
+				if (item.Service != nil){
+					valorEncontrado = *item.Service
+				} else {
+					valorEncontrado = "Other"
 				}
 			}
 
