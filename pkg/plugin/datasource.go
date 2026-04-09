@@ -205,11 +205,11 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 
 					//transoft id_transoft server1-2-3-4...
 					if namespace == "Transnet" && key == "banco" {
-						encontrouTag = true
 						if t.Value != nil {
+							encontrouTag = true
 							valorEncontrado = *t.Value
+							break
 						}
-						break
 					}
 				}
 			} else if (model.Type == "compute"){
