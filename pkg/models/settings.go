@@ -13,11 +13,11 @@ type PluginSettings struct {
 }
 
 type SecretPluginSettings struct {
-	UserOCID string `json:"UserOCID"`
+	UserOCID    string `json:"UserOCID"`
 	TenancyOCID string `json:"TenancyOCID"`
 	Fingerprint string `json:"Fingerprint"`
-	Region string `json:"Region"`
-	PrivateKey string `json:"PrivateKey"`
+	Region      string `json:"Region"`
+	PrivateKey  string `json:"PrivateKey"`
 }
 
 func LoadPluginSettings(source backend.DataSourceInstanceSettings) (*PluginSettings, error) {
@@ -34,10 +34,10 @@ func LoadPluginSettings(source backend.DataSourceInstanceSettings) (*PluginSetti
 
 func loadSecretPluginSettings(source map[string]string) *SecretPluginSettings {
 	return &SecretPluginSettings{
-		UserOCID: source["UserOCID"],
+		UserOCID:    source["UserOCID"],
 		TenancyOCID: source["TenancyOCID"],
 		Fingerprint: source["Fingerprint"],
-		Region: source["Region"],
-		PrivateKey: source["PrivateKey"],
+		Region:      source["Region"],
+		PrivateKey:  source["PrivateKey"],
 	}
 }

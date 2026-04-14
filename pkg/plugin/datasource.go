@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
-	"net/http"
+	"net/url"
+	"regexp"
 
 	"github.com/patrickmn/go-cache"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/transoft/oci-cost/pkg/models"
 
 	"github.com/oracle/oci-go-sdk/v65/common"
+	"github.com/oracle/oci-go-sdk/v65/identity"
 	"github.com/oracle/oci-go-sdk/v65/usageapi"
 
 	//"github.com/grafana/grafana-plugin-sdk-go/backend/log"
@@ -34,13 +37,22 @@ var (
 )
 
 // NewDatasource creates a new datasource instance.
-func NewDatasource(_ context.Context, _ backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
-	return &Datasource{}, nil
+func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
+	config, err := models.LoadPluginSettings(settings)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Datasource{
+		config: config,
+	}, nil
 }
 
 // Datasource is an example datasource which can respond to data queries, reports
 // its health and has streaming skills.
-type Datasource struct{}
+type Datasource struct {
+	config *models.PluginSettings
+}
 
 // Dispose here tells plugin SDK that plugin wants to clean up resources when a new instance
 // created. As soon as datasource settings change detected by SDK old datasource instance will
@@ -55,61 +67,62 @@ func (d *Datasource) Dispose() {
 // contains Frames ([]*Frame).
 
 type queryModel struct {
-    Detailing  string `json:"det"`
-	Type string `json:"type"`
+	Detailing string `json:"det"`
+	Type      string `json:"type"`
+	Service   string `json:"service"`
+	Namespace string `json:"namespace"`
+	Tag       string `json:"tag_key"`
+	Value     string `json:"tag_value"`
 }
 
 var c = cache.New(1*time.Hour, 10*time.Minute)
+
+func matches(pattern string, value string) bool {
+	if strings.HasPrefix(pattern, "!") {
+        regexReal := strings.TrimPrefix(pattern, "!")
+        matched, err := regexp.MatchString(regexReal, value)
+		if err == nil && !matched{
+			return true
+		}
+
+        return pattern == value
+    } else {
+		matched, err := regexp.MatchString(pattern, value)
+		if err == nil && matched {
+			return true
+		}
+
+		return pattern == value
+	}
+}
+
 func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, 120*time.Second)
-    defer cancel()
-	plugin_config, err := models.LoadPluginSettings(*req.PluginContext.DataSourceInstanceSettings)
+	defer cancel()
 	response := backend.NewQueryDataResponse()
 
-	if err != nil {
-		return response, nil
-	}
+	//log.DefaultLogger.Info("%+v", d.config)
 
-	if err != nil {
-		return response, nil
-	}
-
-	if plugin_config.Secrets.UserOCID == "" {
-		return response, nil
-	}
-
-	if plugin_config.Secrets.TenancyOCID == "" {
-		return response, nil
-	}
-
-	if plugin_config.Secrets.Fingerprint == "" {
-		return response, nil
-	}
-
-	if plugin_config.Secrets.Region == "" {
-		return response, nil
-	}
-
-	if plugin_config.Secrets.PrivateKey == "" {
+	if d.config.Secrets.UserOCID == "" || d.config.Secrets.TenancyOCID == "" || d.config.Secrets.Fingerprint == "" || d.config.Secrets.Region == "" || d.config.Secrets.PrivateKey == "" {
 		return response, nil
 	}
 
 	config := common.NewRawConfigurationProvider(
-		plugin_config.Secrets.TenancyOCID,
-		plugin_config.Secrets.UserOCID,
-		plugin_config.Secrets.Region,
-		plugin_config.Secrets.Fingerprint,
-		strings.ReplaceAll(plugin_config.Secrets.PrivateKey, "\\n", "\n"),
+		d.config.Secrets.TenancyOCID,
+		d.config.Secrets.UserOCID,
+		d.config.Secrets.Region,
+		d.config.Secrets.Fingerprint,
+		strings.ReplaceAll(d.config.Secrets.PrivateKey, "\\n", "\n"),
 		nil,
 	)
 
 	client, err := usageapi.NewUsageapiClientWithConfigurationProvider(config)
-    if err != nil {
-        return response, nil
-    }
+	if err != nil {
+		return response, nil
+	}
 
 	httpClient := &http.Client{
-		Timeout: 120 * time.Second, // Timeout total da requisição HTTP
+		Timeout: 120 * time.Second,
 	}
 	client.HTTPClient = httpClient
 
@@ -124,30 +137,23 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 
 	from := firstQuery.TimeRange.From
 	to := firstQuery.TimeRange.To
-	//startTime := common.SDKTime{Time: from.Truncate(24 * time.Hour)}
-	//endTime := common.SDKTime{Time: to.Truncate(24 * time.Hour)}
 	startTime := common.SDKTime{
-		Time: time.Date(from.Year(), from.Month(), from.Day() + 1, 0, 0, 0, 0, time.UTC),
+		Time: time.Date(from.Year(), from.Month(), from.Day()+1, 0, 0, 0, 0, time.UTC),
 	}
 	endTime := common.SDKTime{
-		Time: time.Date(to.Year(), to.Month(), to.Day() + 1, 0, 0, 0, 0, time.UTC),
+		Time: time.Date(to.Year(), to.Month(), to.Day()+1, 0, 0, 0, 0, time.UTC),
 	}
-
-	//if to.After(startTime.Time) {
-	//	endTime.Time = endTime.Time.AddDate(0, 0, 2) 
-	//}
 
 	var res usageapi.RequestSummarizedUsagesResponse
 	const cacheTimeFormat = "2006-01-02T15"
 	cacheKey := fmt.Sprintf("usage_%s_%s_%s", startTime.Format(cacheTimeFormat), endTime.Format(cacheTimeFormat), model.Detailing)
 	if cachedData, found := c.Get(cacheKey); found {
-		//log.DefaultLogger.Info("------------------------------------------------cache foi usado------------------------------------------------")
 		res = cachedData.(usageapi.RequestSummarizedUsagesResponse)
 	} else {
-		if (model.Detailing == "Dias"){
+		if model.Detailing == "Dias" {
 			request := usageapi.RequestSummarizedUsagesRequest{
 				RequestSummarizedUsagesDetails: usageapi.RequestSummarizedUsagesDetails{
-					TenantId:         common.String(plugin_config.Secrets.TenancyOCID),
+					TenantId:         common.String(d.config.Secrets.TenancyOCID),
 					TimeUsageStarted: &startTime,
 					TimeUsageEnded:   &endTime,
 					Granularity:      usageapi.RequestSummarizedUsagesDetailsGranularityDaily,
@@ -160,10 +166,10 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 				response.Responses[firstQuery.RefID] = backend.DataResponse{Error: err}
 				return response, nil
 			}
-		} else if (model.Detailing == "Meses") {
+		} else if model.Detailing == "Meses" {
 			request := usageapi.RequestSummarizedUsagesRequest{
 				RequestSummarizedUsagesDetails: usageapi.RequestSummarizedUsagesDetails{
-					TenantId:         common.String(plugin_config.Secrets.TenancyOCID),
+					TenantId:         common.String(d.config.Secrets.TenancyOCID),
 					TimeUsageStarted: &startTime,
 					TimeUsageEnded:   &endTime,
 					Granularity:      usageapi.RequestSummarizedUsagesDetailsGranularityMonthly,
@@ -181,56 +187,72 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 		c.Set(cacheKey, res, cache.DefaultExpiration)
 	}
 
-    for _, q := range req.Queries {
+	for _, q := range req.Queries {
 		pivotData := make(map[time.Time]map[string]float64)
 		instancesFound := make(map[string]bool)
 
 		for _, item := range res.Items {
 			encontrouTag := false
 			valorEncontrado := "null"
-			if (model.Type == "database"){
-				if item.Tags == nil || len(item.Tags) == 0 {
-					continue 
-				}
-
-				if (item.Service != nil && *item.Service != "Database"){
+			if model.Service != "All" {
+				if item.Service != nil && *item.Service != model.Service {
 					continue
 				}
+
+				if item.Tags == nil || len(item.Tags) == 0 {
+					continue
+				}
+
 				for _, t := range item.Tags {
 					namespace := ""
-					if t.Namespace != nil { namespace = *t.Namespace }
-					
-					key := ""
-					if t.Key != nil { key = *t.Key }
-
-					//transoft id_transoft server1-2-3-4...
-					if namespace == "Transnet" && key == "banco" {
-						if t.Value != nil {
-							encontrouTag = true
-							valorEncontrado = *t.Value
-							break
-						}
+					if t.Namespace != nil {
+						namespace = *t.Namespace
 					}
-				}
-			} else if (model.Type == "compute"){
-				if item.Tags == nil || len(item.Tags) == 0 {
-					continue 
-				}
 
-				if (item.Service != nil && *item.Service != "Compute"){
-					continue
-				}
-				for _, t := range item.Tags {
-					namespace := ""
-					if t.Namespace != nil { namespace = *t.Namespace }
-					
 					key := ""
-					if t.Key != nil { key = *t.Key }
+					if t.Key != nil {
+						key = *t.Key
+					}
 
-					//transoft id_transoft server1-2-3-4...
-					if namespace == "transoft" && key == "id_transoft" {
-						if t.Value != nil {
-							if strings.HasPrefix(*t.Value, "server") {
+					if (model.Namespace != "All" && matches(model.Namespace, namespace)) {
+						if (model.Tag != "All" && matches(model.Tag, key)){
+							if (model.Value != "All" && t.Value != nil && matches(model.Value, *t.Value)){
+								encontrouTag = true
+								valorEncontrado = *t.Value
+								break
+							} else if (model.Value == "All" && t.Value != nil){
+								encontrouTag = true
+								valorEncontrado = *t.Value
+								break
+							}
+						} else if (model.Tag == "All"){
+							if (model.Value != "All" && t.Value != nil && matches(model.Value, *t.Value)){
+								encontrouTag = true
+								valorEncontrado = *t.Value
+								break
+							} else if (model.Value == "All" && t.Value != nil){
+								encontrouTag = true
+								valorEncontrado = *t.Value
+								break
+							}
+						}
+					} else if (model.Namespace == "All"){
+						if (model.Tag != "All" && matches(model.Tag, key)){
+							if (model.Value != "All" && t.Value != nil && matches(model.Value, *t.Value)){
+								encontrouTag = true
+								valorEncontrado = *t.Value
+								break
+							} else if (model.Value == "All" && t.Value != nil){
+								encontrouTag = true
+								valorEncontrado = *t.Value
+								break
+							}
+						} else if (model.Tag == "All"){
+							if (model.Value != "All" && t.Value != nil && matches(model.Value, *t.Value)){
+								encontrouTag = true
+								valorEncontrado = *t.Value
+								break
+							} else if (model.Value == "All" && t.Value != nil){
 								encontrouTag = true
 								valorEncontrado = *t.Value
 								break
@@ -238,40 +260,78 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 						}
 					}
 				}
-			} else if (model.Type == "compute-all"){
-				if item.Tags == nil || len(item.Tags) == 0 {
-					continue 
-				}
+			} else if model.Service == "All" {
+				if (model.Namespace != "All" || model.Tag != "All" || model.Value != "All"){
+					if item.Tags == nil || len(item.Tags) == 0 {
+						continue
+					}
 
-				if (item.Service != nil && *item.Service != "Compute"){
-					continue
-				}
-				for _, t := range item.Tags {
-					namespace := ""
-					if t.Namespace != nil { namespace = *t.Namespace }
-					
-					key := ""
-					if t.Key != nil { key = *t.Key }
+					for _, t := range item.Tags {
+						namespace := ""
+						if t.Namespace != nil {
+							namespace = *t.Namespace
+						}
 
-					//transoft id_transoft server1-2-3-4...
-					if namespace == "transoft" && key == "id_transoft" {
-						if t.Value != nil {
-							if !strings.HasPrefix(*t.Value, "server") {
-								encontrouTag = true
-								valorEncontrado = *t.Value
-								break
+						key := ""
+						if t.Key != nil {
+							key = *t.Key
+						}
+
+						if (model.Namespace != "All" && matches(model.Namespace, namespace)) {
+							if (model.Tag != "All" && matches(model.Tag, key)){
+								if (model.Value != "All" && t.Value != nil && matches(model.Value, *t.Value)){
+									encontrouTag = true
+									valorEncontrado = *t.Value
+									break
+								} else if (model.Value == "All" && t.Value != nil){
+									encontrouTag = true
+									valorEncontrado = *t.Value
+									break
+								}
+							} else if (model.Tag == "All"){
+								if (model.Value != "All" && t.Value != nil && matches(model.Value, *t.Value)){
+									encontrouTag = true
+									valorEncontrado = *t.Value
+									break
+								} else if (model.Value == "All" && t.Value != nil){
+									encontrouTag = true
+									valorEncontrado = *t.Value
+									break
+								}
+							}
+						} else if (model.Namespace == "All"){
+							if (model.Tag != "All" && matches(model.Tag, key)){
+								if (model.Value != "All" && t.Value != nil && matches(model.Value, *t.Value)){
+									encontrouTag = true
+									valorEncontrado = *t.Value
+									break
+								} else if (model.Value == "All" && t.Value != nil){
+									encontrouTag = true
+									valorEncontrado = *t.Value
+									break
+								}
+							} else if (model.Tag == "All"){
+								if (model.Value != "All" && t.Value != nil && matches(model.Value, *t.Value)){
+									encontrouTag = true
+									valorEncontrado = *t.Value
+									break
+								} else if (model.Value == "All" && t.Value != nil){
+									encontrouTag = true
+									valorEncontrado = *t.Value
+									break
+								}
 							}
 						}
 					}
-				}
-			} else if (model.Type == "all"){
-				encontrouTag = true
-				if (item.Service != nil){
-					valorEncontrado = *item.Service
 				} else {
-					valorEncontrado = "Other"
+					encontrouTag = true
+					if item.Service != nil {
+						valorEncontrado = *item.Service
+					} else {
+						valorEncontrado = "Other"
+					}
 				}
-			}
+			} 
 
 			if !encontrouTag {
 				continue
@@ -315,10 +375,10 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 			frame.AppendRow(row...)
 		}
 
-        response.Responses[q.RefID] = backend.DataResponse{Frames: data.Frames{frame}}
-    }
+		response.Responses[q.RefID] = backend.DataResponse{Frames: data.Frames{frame}}
+	}
 
-    return response, nil
+	return response, nil
 }
 
 // CheckHealth handles health checks sent from Grafana to the plugin.
@@ -335,33 +395,7 @@ func (d *Datasource) CheckHealth(_ context.Context, req *backend.CheckHealthRequ
 		return res, nil
 	}
 
-	if config.Secrets.UserOCID == "" {
-		res.Status = backend.HealthStatusError
-		res.Message = "User Ocid is missing"
-		return res, nil
-	}
-
-	if config.Secrets.TenancyOCID == "" {
-		res.Status = backend.HealthStatusError
-		res.Message = "Tenancy Ocid is missing"
-		return res, nil
-	}
-
-	if config.Secrets.Fingerprint == "" {
-		res.Status = backend.HealthStatusError
-		res.Message = "Fingerprint is missing"
-		return res, nil
-	}
-
-	if config.Secrets.Region == "" {
-		res.Status = backend.HealthStatusError
-		res.Message = "Region is missing"
-		return res, nil
-	}
-
-	if config.Secrets.PrivateKey == "" {
-		res.Status = backend.HealthStatusError
-		res.Message = "Private Key is missing"
+	if config.Secrets.UserOCID == "" || config.Secrets.TenancyOCID == "" || config.Secrets.Fingerprint == "" || config.Secrets.Region == "" || config.Secrets.PrivateKey == "" {
 		return res, nil
 	}
 
@@ -375,14 +409,178 @@ func (d *Datasource) CheckHealth(_ context.Context, req *backend.CheckHealthRequ
 	)
 
 	_, err = usageapi.NewUsageapiClientWithConfigurationProvider(ociconfig)
-    if err != nil {
-        res.Status = backend.HealthStatusError
+	if err != nil {
+		res.Status = backend.HealthStatusError
 		res.Message = "Cannot create OCI client connection"
 		return res, nil
-    }
+	}
 
 	return &backend.CheckHealthResult{
 		Status:  backend.HealthStatusOk,
 		Message: "Data source is working",
 	}, nil
+}
+
+func writeResponse(sender backend.CallResourceResponseSender, data interface{}) error {
+	jsonRes, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	return sender.Send(&backend.CallResourceResponse{
+		Status: http.StatusOK,
+		Body:   jsonRes,
+	})
+}
+
+func (d *Datasource) fetchTagNamespaces(ctx context.Context) ([]string, error) {
+	if d.config.Secrets.UserOCID == "" || d.config.Secrets.TenancyOCID == "" || d.config.Secrets.Fingerprint == "" || d.config.Secrets.Region == "" || d.config.Secrets.PrivateKey == "" {
+		return nil, nil
+	}
+
+	config := common.NewRawConfigurationProvider(
+		d.config.Secrets.TenancyOCID,
+		d.config.Secrets.UserOCID,
+		d.config.Secrets.Region,
+		d.config.Secrets.Fingerprint,
+		strings.ReplaceAll(d.config.Secrets.PrivateKey, "\\n", "\n"),
+		nil,
+	)
+
+	request := identity.ListTagNamespacesRequest{
+		CompartmentId: common.String(d.config.Secrets.TenancyOCID),
+		IncludeSubcompartments: common.Bool(true),
+		Limit: common.Int(100),
+	}
+
+	client, err := identity.NewIdentityClientWithConfigurationProvider(config)
+	if err != nil {
+		return nil, fmt.Errorf("falha ao criar usage client: %w", err)
+	}
+
+	res, err := client.ListTagNamespaces(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+
+	var namespaces []string
+	for _, ns := range res.Items {
+		namespaces = append(namespaces, *ns.Name)
+	}
+	namespaces = append(namespaces, "All")
+	return namespaces, nil
+}
+
+func (d *Datasource) fetchTagsByNamespace(ctx context.Context, namespaceName string) ([]string, error) {
+	if namespaceName == "" {
+        return []string{}, nil
+    }
+	
+	if d.config.Secrets.UserOCID == "" || d.config.Secrets.TenancyOCID == "" || d.config.Secrets.Fingerprint == "" || d.config.Secrets.Region == "" || d.config.Secrets.PrivateKey == "" {
+		return nil, nil
+	}
+
+	config := common.NewRawConfigurationProvider(
+		d.config.Secrets.TenancyOCID,
+		d.config.Secrets.UserOCID,
+		d.config.Secrets.Region,
+		d.config.Secrets.Fingerprint,
+		strings.ReplaceAll(d.config.Secrets.PrivateKey, "\\n", "\n"),
+		nil,
+	)
+
+	var tags []string
+	if (namespaceName == "All"){
+		request1 := identity.ListTagNamespacesRequest{
+			CompartmentId: common.String(d.config.Secrets.TenancyOCID),
+			IncludeSubcompartments: common.Bool(true),
+			Limit: common.Int(100),
+		}
+
+		client, err := identity.NewIdentityClientWithConfigurationProvider(config)
+		if err != nil {
+			return nil, fmt.Errorf("falha ao criar usage client: %w", err)
+		}
+
+		res, err := client.ListTagNamespaces(ctx, request1)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, ns := range res.Items {
+			request2 := identity.ListTagsRequest{
+				TagNamespaceId: common.String(*ns.Name),
+				Limit:          common.Int(100),
+			}
+
+			client, err := identity.NewIdentityClientWithConfigurationProvider(config)
+			if err != nil {
+				return nil, fmt.Errorf("falha ao criar usage client: %w", err)
+			}
+
+			res, err := client.ListTags(ctx, request2)
+			if err != nil {
+				return nil, err
+			}
+
+			for _, tag := range res.Items {
+				if tag.Name != nil {
+					tags = append(tags, *tag.Name)
+				}
+			}
+		}
+	} else {
+		request := identity.ListTagsRequest{
+			TagNamespaceId: common.String(namespaceName),
+			Limit:          common.Int(100),
+		}
+
+		client, err := identity.NewIdentityClientWithConfigurationProvider(config)
+		if err != nil {
+			return nil, fmt.Errorf("falha ao criar usage client: %w", err)
+		}
+
+		res, err := client.ListTags(ctx, request)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, tag := range res.Items {
+			if tag.Name != nil {
+				tags = append(tags, *tag.Name)
+			}
+		}
+	}
+	
+	tags = append(tags, "All")
+    return tags, nil
+}
+
+func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+	var data []string
+	var err error
+
+	u, err := url.Parse(req.URL)
+    if err != nil {
+        return sender.Send(&backend.CallResourceResponse{Status: http.StatusBadRequest})
+    }
+
+	switch u.Path {
+	case "namespaces":
+		data, err = d.fetchTagNamespaces(ctx)
+	case "tags":
+		ns := u.Query().Get("namespace")
+		data, err = d.fetchTagsByNamespace(ctx, ns)
+	default:
+		return sender.Send(&backend.CallResourceResponse{Status: http.StatusNotFound})
+	}
+
+	if err != nil {
+		return sender.Send(&backend.CallResourceResponse{
+			Status: http.StatusInternalServerError,
+			Body:   []byte(err.Error()),
+		})
+	}
+
+	return writeResponse(sender, data)
 }

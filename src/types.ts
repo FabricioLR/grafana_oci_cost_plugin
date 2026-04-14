@@ -4,11 +4,19 @@ import { DataQuery } from '@grafana/schema';
 export interface MyQuery extends DataQuery {
   det: string;
   type: string;
+  namespace: string;
+  tag_key: string;
+  tag_value: string;
+  service: string;
 }
 
 export const DEFAULT_QUERY: Partial<MyQuery> = {
   det: "Dias",
-  type: "all"
+  type: "all",
+  namespace: "All",
+  tag_key: "All",
+  tag_value: "All",
+  service: "All"
 };
 
 export interface DataPoint {
